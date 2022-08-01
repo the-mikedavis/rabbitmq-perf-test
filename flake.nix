@@ -16,9 +16,12 @@
         inherit system;
         overlays = [ mvn2nix.overlay overlay ];
       };
-    in utils.lib.eachSystem utils.lib.defaultSystems (system: rec {
+    in utils.lib.eachDefaultSystem (system: rec {
       legacyPackages = pkgs' system;
       packages = utils.lib.flattenTree { inherit (legacyPackages) perf-test; };
       defaultPackage = legacyPackages.perf-test;
+      devShells.default = legacyPackages.mkShell {
+        buildInputs = with legacyPackages; [ maven jdk11_headless ];
+      };
     });
 }
