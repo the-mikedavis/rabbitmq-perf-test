@@ -1,26 +1,33 @@
-{ lib, stdenv, buildMavenRepositoryFromLockFile, makeWrapper, maven, jdk11_headless, nix-gitignore }:
+{ lib, stdenv, buildMavenRepositoryFromLockFile, maven, graalvm11-ce, glibcLocales, nix-gitignore }:
 
 let
   mavenRepository = buildMavenRepositoryFromLockFile { file = ./mvn2nix-lock.json; };
+  version = "2.19.0-SNAPSHOT";
 in stdenv.mkDerivation rec {
   pname = "perf-test";
-  version = "2.19.0-SNAPSHOT";
+  inherit version;
   name = "${pname}-${version}";
   src = nix-gitignore.gitignoreSource ["*.nix"] ./.;
 
-  nativeBuildInputs = [ jdk11_headless maven makeWrapper ];
+  nativeBuildInputs = [ maven graalvm11-ce glibcLocales ];
   buildPhase = ''
     echo "Building with maven repository ${mavenRepository}"
-    mvn package --offline -P uber-jar \
+    mvn package --offline \
       -Dmaven.repo.local=${mavenRepository} \
-      -Dgpg.skip=true -Dmaven.test.skip
+      -P native-image -P '!java-packaging' \
+      -DskipTests
+
+    echo "Constructing native binary with GraalVM"
+    native-image -jar target/${pname}.jar -H:Features="com.rabbitmq.perf.NativeImageFeature" \
+      --static \
+      --initialize-at-build-time=io.micrometer \
+      --initialize-at-build-time=com.rabbitmq.client \
+      --initialize-at-build-time=org.slf4j \
+      --no-fallback \
+      -H:IncludeResources="rabbitmq-perf-test.properties"
   '';
 
   installPhase = ''
-    mkdir -p $out/bin
-    ln -s ${mavenRepository} $out/lib
-    cp target/${pname}.jar $out/
-    makeWrapper ${jdk11_headless}/bin/java $out/bin/${pname} \
-      --add-flags "-jar $out/${pname}.jar"
+    install -Dm755 ${pname} -t $out/bin
   '';
 }
