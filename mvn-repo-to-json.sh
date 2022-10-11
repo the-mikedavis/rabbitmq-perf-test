@@ -25,6 +25,7 @@
 #     nix shell nixpkgs#maven
 #     mkdir foo/
 #     mvn clean package -P uber-jar -Dgpg.skip=true -Dmaven.test.skip=true -Dmaven.repo.local=foo
+#     mvn clean package -DskipTests -P native-image -P '!java-packaging' -Dmaven.repo.local=foo
 #
 # Now the `foo/` directory contains the maven repository. Then run
 # the script to generate the `mvn2nix-lock.json` file:
