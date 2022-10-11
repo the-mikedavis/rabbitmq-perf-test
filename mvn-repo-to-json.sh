@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# The creation of this flake too quite a while since it seems like
+# The creation of this flake took quite a while since it seems like
 # the Maven build tool is not the best-supported build tool in the
 # Nix community. There are a few tools but none of them seem very
 # actively maintained and all of the lack support for Maven profiles.
@@ -22,8 +22,9 @@
 # To use it, build the project in the `uber-jar` profile using a local
 # maven repository in some directory. Let's call it `foo/`. Drop into
 #
+#     nix shell nixpkgs#maven
 #     mkdir foo/
-#     nix shell nixpkgs#maven --command "mvn clean package -P uber-jar -Dgpg.skip=true -Dmaven.test.skip=true -Dmaven.repo.local=foo"
+#     mvn clean package -P uber-jar -Dgpg.skip=true -Dmaven.test.skip=true -Dmaven.repo.local=foo
 #
 # Now the `foo/` directory contains the maven repository. Then run
 # the script to generate the `mvn2nix-lock.json` file:
