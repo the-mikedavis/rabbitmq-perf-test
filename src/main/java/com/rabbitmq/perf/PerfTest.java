@@ -26,6 +26,7 @@ import com.rabbitmq.perf.Metrics.ConfigurationContext;
 import io.micrometer.core.instrument.composite.CompositeMeterRegistry;
 import java.math.BigDecimal;
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import org.apache.commons.cli.*;
 import org.slf4j.Logger;
@@ -127,7 +128,7 @@ public class PerfTest {
             boolean autoDelete       = boolArg(cmd, "ad", true);
             boolean useMillis        = hasOption(cmd,"ms");
             boolean saslExternal     = hasOption(cmd, "se");
-            String queueArgs         = strArg(cmd, "qa", null);
+            List<String> queueArgs   = lstArg(cmd, "qa");
             int consumerLatencyInMicroseconds = intArg(cmd, 'L', 0);
             int heartbeatSenderThreads = intArg(cmd, "hst", -1);
             String messageProperties = strArg(cmd, "mp", null);
@@ -164,6 +165,12 @@ public class PerfTest {
                         systemExiter.exit(1);
                     }
                 }
+            }
+
+            if ((!variableRates.isEmpty() || producerRateLimit >= 0 || publishingInterval != null)
+                && producerRandomStartDelayInSeconds < 0) {
+                // producer rate instructions, but no ramp-up period, so setting it to 1 second
+                producerRandomStartDelayInSeconds = 1;
             }
 
             List<String> variableSizes = lstArg(cmd, "vs");
@@ -236,6 +243,7 @@ public class PerfTest {
             } else {
                 exitWhen = EXIT_WHEN.NEVER;
             }
+            Duration consumerStartDelay = Duration.ofSeconds(intArg(cmd, "csd", -1));
 
             ConnectionFactory factory = new ConnectionFactory();
             if (disableConnectionRecovery) {
@@ -277,7 +285,7 @@ public class PerfTest {
 
             //setup
             PrintlnStats stats = new PrintlnStats(testID,
-                1000L * samplingInterval,
+                Duration.ofSeconds(samplingInterval),
                 producerCount > 0,
                 consumerCount > 0,
                 (flags.contains("mandatory") || flags.contains("immediate")),
@@ -407,6 +415,7 @@ public class PerfTest {
             p.setQueuesInSequence(queueFile != null);
             p.setExitWhen(exitWhen);
             p.setCluster(uris.size() > 0);
+            p.setConsumerStartDelay(consumerStartDelay);
 
             ConcurrentMap<String, Integer> completionReasons = new ConcurrentHashMap<>();
 
@@ -414,11 +423,32 @@ public class PerfTest {
 
             factory.setExceptionHandler(perfTestOptions.exceptionHandler);
 
-            MulticastSet set = new MulticastSet(stats, factory, p, testID, uris, completionHandler, shutdownService);
+            AtomicBoolean statsSummaryDone = new AtomicBoolean(false);
+            Runnable statsSummary = () -> {
+                if (statsSummaryDone.compareAndSet(false, true)) {
+                    System.out.println(stopLine(completionReasons));
+                    stats.printFinal();
+                }
+            };
+            shutdownService.wrap(() -> statsSummary.run());
+
+            Map<String, Object> exposedMetrics = convertKeyValuePairs(strArg(cmd, "em", null));
+            ExpectedMetrics expectedMetrics = new ExpectedMetrics(p, registry, metricsPrefix, exposedMetrics);
+            int agentCount = p.getProducerThreadCount() + p.getConsumerThreadCount();
+            Set<Integer> starts = ConcurrentHashMap.newKeySet(agentCount);
+            p.setStartListener((id, type) -> {
+                if (starts.add(id) && starts.size() == agentCount) {
+                    stats.resetGlobals();
+                }
+                expectedMetrics.agentStarted(type);
+            });
+
+            MulticastSet set = new MulticastSet(stats, factory, p, testID, uris, completionHandler,
+                shutdownService, expectedMetrics);
             set.run(true);
 
-            System.out.println(stopLine(completionReasons));
-            stats.printFinal();
+            statsSummary.run();
+
         } catch (ParseException exp) {
             System.err.println("Parsing failed. Reason: " + exp.getMessage());
             usage(options);
@@ -644,8 +674,10 @@ public class PerfTest {
         options.addOption(new Option("ad", "auto-delete",           true, "should the queue be auto-deleted, default is true"));
         options.addOption(new Option("ms", "use-millis",            false,"should latency be collected in milliseconds, default is false. "
                                                                                                     + "Set to true if producers and consumers run on different machines."));
-        options.addOption(new Option("qa", "queue-args",            true, "queue arguments as key/value pairs, separated by commas, "
-                                                                                                    + "e.g. x-max-length=10"));
+        Option queueArgumentsOption = new Option("qa", "queue-args",            true, "queue arguments as key/value pairs, separated by commas, "
+            + "e.g. x-max-length=10");
+        queueArgumentsOption.setArgs(Option.UNLIMITED_VALUES);
+        options.addOption(queueArgumentsOption);
         options.addOption(new Option("L", "consumer-latency",       true, "consumer latency in microseconds"));
 
         options.addOption(new Option("udsc", "use-default-ssl-context", false, "use JVM default SSL context"));
@@ -723,7 +755,7 @@ public class PerfTest {
                 "Use with --json-body. Default is 1000."));
         options.addOption(new Option("bc", "body-count", true, "number of pre-generated message bodies. " +
                 "Use with --json-body. Default is 100."));
-        options.addOption(new Option("ca", "consumer-args", true, "consumer arguments as key/values pairs, separated by commas, "
+        options.addOption(new Option("ca", "consumer-args", true, "consumer arguments as key/value pairs, separated by commas, "
                 + "e.g. x-priority=10"));
         options.addOption(new Option("cri", "connection-recovery-interval", true, "connection recovery interval in seconds. Default is 5 seconds. "
                 + "Interval syntax, e.g. 30-60, is supported to specify an random interval between 2 values between each attempt."));
@@ -732,6 +764,9 @@ public class PerfTest {
         options.addOption(new Option("sni", "server-name-indication", true, "server names for Server Name Indication TLS parameter, separated by commas"));
         options.addOption(new Option("qq", "quorum-queue", false,"create quorum queue(s)"));
         options.addOption(new Option("ew", "exit-when", true, "exit when queue(s) empty or consumer(s) idle for 1 second, valid values are empty or idle"));
+        options.addOption(new Option("csd", "consumer-start-delay", true, "fixed delay before starting consumers in seconds"));
+        options.addOption(new Option("em", "exposed-metrics", true, "metrics to be exposed as key/value pairs, separated by commas, "
+            + "e.g. expected_published=50000"));
         return options;
     }
 
@@ -767,6 +802,21 @@ public class PerfTest {
         return cmd.hasOption(opt);
     }
 
+    static Map<String, Object> convertKeyValuePairs(List<String> args) {
+        if (args == null || args.isEmpty()) {
+            return Collections.emptyMap();
+        } else {
+            LinkedHashMap result = new LinkedHashMap();
+            for (String arg : args) {
+                Map<String, Object> intermediaryArgs = convertKeyValuePairs(arg);
+                if (intermediaryArgs != null) {
+                    result.putAll(intermediaryArgs);
+                }
+            }
+            return result;
+        }
+    }
+
     static Map<String, Object> convertKeyValuePairs(String arg) {
         if (arg == null || arg.trim().isEmpty()) {
             return null;
@@ -785,10 +835,14 @@ public class PerfTest {
         }).map(keyValue -> {
             if ("x-dead-letter-exchange".equals(keyValue[0]) && "amq.default".equals(keyValue[1])) {
                 return new String[] {"x-dead-letter-exchange", ""};
+            }
+            else if ("x-single-active-consumer".equals(keyValue[0])) {
+                return new Object[] {"x-single-active-consumer", Boolean.parseBoolean(String.valueOf(keyValue[1]))};
             } else {
                 return keyValue;
             }
-        }).collect(Collectors.toMap(keyEntry -> keyEntry[0].toString(), keyEntry -> keyEntry[1]));
+        }).collect(Collectors.toMap(entry -> entry[0].toString(), entry -> entry[1],
+                (o1, o2) -> o2, LinkedHashMap::new));
     }
 
     private static String getExchangeName(CommandLineProxy cmd, String def) {

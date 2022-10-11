@@ -28,6 +28,7 @@ import com.rabbitmq.client.Recoverable;
 import com.rabbitmq.client.RecoveryListener;
 import com.rabbitmq.client.impl.recovery.AutorecoveringConnection;
 import com.rabbitmq.perf.PerfTest.EXIT_WHEN;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
 import java.net.URISyntaxException;
 import java.security.KeyManagementException;
@@ -76,18 +77,23 @@ public class MulticastSet {
     private final ValueIndicator<Integer> messageSizeIndicator;
     private final ValueIndicator<Long> consumerLatencyIndicator;
     private final ConnectionCreator connectionCreator;
+    private final ExpectedMetrics expectedMetrics;
 
     public MulticastSet(Stats stats, ConnectionFactory factory,
         MulticastParams params, List<String> uris, CompletionHandler completionHandler) {
-        this(stats, factory, params, "perftest", uris, completionHandler, new ShutdownService());
+        this(stats, factory, params, "perftest", uris, completionHandler);
     }
 
     public MulticastSet(Stats stats, ConnectionFactory factory,
                         MulticastParams params, String testID, List<String> uris, CompletionHandler completionHandler) {
-        this(stats, factory, params, testID, uris, completionHandler, new ShutdownService());
+        this(stats, factory, params, testID, uris, completionHandler, new ShutdownService(),
+            new ExpectedMetrics(params, new SimpleMeterRegistry(), "perftest_", Collections.emptyMap()));
     }
+
     public MulticastSet(Stats stats, ConnectionFactory factory,
-        MulticastParams params, String testID, List<String> uris, CompletionHandler completionHandler, ShutdownService shutdownService) {
+        MulticastParams params, String testID, List<String> uris,
+        CompletionHandler completionHandler, ShutdownService shutdownService,
+        ExpectedMetrics expectedMetrics) {
         this.stats = stats;
         this.factory = factory;
         this.params = params;
@@ -130,7 +136,7 @@ public class MulticastSet {
         }
 
         this.connectionCreator = new ConnectionCreator(this.factory, this.uris);
-        if (stats.interval() > 0) {
+        if (stats.interval().toMillis() > 0) {
             this.threadingHandler.scheduledExecutorService("perf-test-stats-activity-check-", 1)
                 .scheduleAtFixedRate(() -> {
                     try {
@@ -138,8 +144,9 @@ public class MulticastSet {
                     } catch (Exception e) {
                         LOGGER.warn("Error while checking stats activity: {}", e.getMessage());
                     }
-                }, stats.interval() * 2, stats.interval(), TimeUnit.MILLISECONDS);
+                }, stats.interval().toMillis() * 2, stats.interval().toMillis(), TimeUnit.MILLISECONDS);
         }
+        this.expectedMetrics = expectedMetrics;
     }
 
     protected static int nbThreadsForConsumer(MulticastParams params) {
@@ -430,13 +437,35 @@ public class MulticastSet {
     }
 
     private void startConsumers(Runnable[] consumerRunnables) throws InterruptedException {
-        this.consumerLatencyIndicator.start();
-        for (Runnable runnable : consumerRunnables) {
-            runnable.run();
-            if (params.getConsumerSlowStart()) {
-                System.out.println("Delaying start by 1 second because -S/--slow-start was requested");
-                Thread.sleep(1000);
+        if (this.params.getConsumerStartDelay().getSeconds() <= 0) {
+            this.consumerLatencyIndicator.start();
+            for (Runnable runnable : consumerRunnables) {
+                runnable.run();
+                if (params.getConsumerSlowStart()) {
+                    System.out.println("Delaying start by 1 second because -S/--slow-start was requested");
+                    Thread.sleep(1000);
+                }
             }
+        } else {
+            this.threadingHandler.scheduledExecutorService("consumer-start-delay-", 0).schedule(
+                () -> {
+                    this.consumerLatencyIndicator.start();
+                    for (Runnable runnable : consumerRunnables) {
+                        runnable.run();
+                        if (params.getConsumerSlowStart()) {
+                            System.out.println("Delaying start by 1 second because -S/--slow-start was requested");
+                            try {
+                                Thread.sleep(1000);
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                return;
+                            }
+                        }
+                    }
+                },
+                params.getConsumerStartDelay().getSeconds(),
+                TimeUnit.SECONDS
+            );
         }
     }
 
@@ -449,17 +478,22 @@ public class MulticastSet {
                 + "falling back to scheduling with {} ms as publishing interval", calculatedPublishingInterval.toMillis());
             params.setPublishingInterval(calculatedPublishingInterval);
         }
+        expectedMetrics.register(rateIndicator, params.getPublishingInterval());
         if (params.getPublishingInterval() != null) {
             ScheduledExecutorService producersExecutorService = this.threadingHandler.scheduledExecutorService(
                     PRODUCER_THREAD_PREFIX, nbThreadsForProducerScheduledExecutorService(params)
             );
             Supplier<Duration> startDelaySupplier;
             if (params.getProducerRandomStartDelayInSeconds() > 0) {
+                LOGGER.debug("Using random start-up delay for producers, from 1 ms to {} s",
+                    params.getProducerRandomStartDelayInSeconds());
                 Random random = new Random();
-                startDelaySupplier = () -> Duration.ofSeconds(
-                    random.nextInt(params.getProducerRandomStartDelayInSeconds()) + 1
+                int bound = params.getProducerRandomStartDelayInSeconds() * 1000;
+                startDelaySupplier = () -> Duration.ofMillis(
+                    random.nextInt(bound) + 1
                 );
             } else {
+                LOGGER.debug("No start-up delay for producers, they are starting ASAP");
                 startDelaySupplier = () -> Duration.ZERO;
             }
             Duration publishingInterval = params.getPublishingInterval();

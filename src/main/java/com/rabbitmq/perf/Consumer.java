@@ -15,10 +15,13 @@
 
 package com.rabbitmq.perf;
 
+import static com.rabbitmq.perf.RateLimiterUtils.*;
+
 import com.rabbitmq.client.AMQP.BasicProperties;
 import com.rabbitmq.client.*;
 import com.rabbitmq.client.AMQP.Queue.DeclareOk;
 import com.rabbitmq.perf.PerfTest.EXIT_WHEN;
+import com.rabbitmq.perf.StartListener.Type;
 import com.rabbitmq.perf.TopologyRecording.RecordedQueue;
 import java.time.Duration;
 import java.util.concurrent.Callable;
@@ -93,7 +96,11 @@ public class Consumer extends AgentBase implements Runnable {
 
     private final AtomicLong epochMessageCount = new AtomicLong(0);
 
+    private final Runnable rateLimiterCallback;
+    private final boolean rateLimitation;
+
     public Consumer(ConsumerParameters parameters) {
+        super(parameters.getStartListener());
         this.channel           = parameters.getChannel();
         this.id                = parameters.getId();
         this.txSize            = parameters.getTxSize();
@@ -152,9 +159,21 @@ public class Consumer extends AgentBase implements Runnable {
         }
 
 
-        this.state = new ConsumerState(parameters.getRateLimit(), timestampProvider);
+        this.rateLimitation = parameters.getRateLimit() > 0;
+        if (this.rateLimitation) {
+            RateLimiter rateLimiter = RateLimiter.create(parameters.getRateLimit());
+            this.rateLimiterCallback = () -> rateLimiter.acquire(1);
+        } else {
+            this.rateLimiterCallback = () -> { };
+        }
+        this.state = new ConsumerState(timestampProvider);
         this.recoveryProcess = parameters.getRecoveryProcess();
         this.recoveryProcess.init(this);
+    }
+
+    @Override
+    protected Type type() {
+        return Type.CONSUMER;
     }
 
     public void run() {
@@ -174,6 +193,7 @@ public class Consumer extends AgentBase implements Runnable {
             List<String> queues = this.queueNames.get();
             Channel ch = this.channel;
             Connection connection = this.channel.getConnection();
+            started();
             while (!completed.get() && !Thread.interrupted()) {
                 // queue name can change between recoveries, we refresh only if necessary
                 if (queueNamesVersion != this.queueNamesVersion.get()) {
@@ -221,6 +241,7 @@ public class Consumer extends AgentBase implements Runnable {
     }
 
     private void registerAsynchronousConsumer() {
+        started();
         try {
             q = new ConsumerImpl(channel);
             for (String qName : queueNames.get()) {
@@ -236,14 +257,12 @@ public class Consumer extends AgentBase implements Runnable {
 
     private class ConsumerImpl extends DefaultConsumer {
 
-        private final boolean rateLimitation;
         private final AtomicLong receivedMessageCount = new AtomicLong(0);
 
         private ConsumerImpl(Channel channel) {
             super(channel);
-            state.setLastStatsTime(System.currentTimeMillis());
+            state.setLastStatsTime(System.nanoTime());
             state.setMsgCount(0);
-            this.rateLimitation = state.getRateLimit() > 0.0f;
         }
 
         @Override
@@ -268,8 +287,8 @@ public class Consumer extends AgentBase implements Runnable {
                     commitTransactionIfNecessary(epochMessageCount.get(), ch);
                     lastDeliveryTag = envelope.getDeliveryTag();
 
-                    long now = System.currentTimeMillis();
-                    if (this.rateLimitation) {
+                    long now = System.nanoTime();
+                    if (rateLimitation) {
                         // if rate is limited, we need to reset stats every second
                         // otherwise pausing to throttle rate will be based on the whole history
                         // which is broken when rate varies
@@ -280,7 +299,7 @@ public class Consumer extends AgentBase implements Runnable {
                             state.setLastStatsTime(now);
                             state.setMsgCount(0);
                         }
-                        delay(now, state);
+                        rateLimiterCallback.run();
                     }
                 }
             }
@@ -323,7 +342,7 @@ public class Consumer extends AgentBase implements Runnable {
 
         @Override
         public void handleCancel(String consumerTag) throws IOException {
-            System.out.printf("Consumer cancelled by broker for tag: %s", consumerTag);
+            System.out.printf("Consumer cancelled by broker for tag: %s\n", consumerTag);
             epochMessageCount.set(0);
             if (consumerTagBranchMap.containsKey(consumerTag)) {
                 String qName = consumerTagBranchMap.get(consumerTag);
@@ -331,7 +350,7 @@ public class Consumer extends AgentBase implements Runnable {
                 RecordedQueue queueRecord = topologyRecording.queue(qName);
                 consumeOrScheduleConsume(queueRecord, topologyRecording, consumerTag, qName);
             } else {
-                System.out.printf("Could not find queue for consumer tag: %s", consumerTag);
+                System.out.printf("Could not find queue for consumer tag: %s\n", consumerTag);
             }
         }
     }
@@ -383,16 +402,19 @@ public class Consumer extends AgentBase implements Runnable {
                                           TopologyRecording topologyRecording,
                                           String consumerTag,
                                           String queueName) throws IOException {
+        LOGGER.debug("Checking if queue {} exists before subscribing", queueName);
+        boolean queueExists = Utils.exists(channel.getConnection(), ch -> ch.queueDeclarePassive(queueName));
         if (queueMayBeDown(queueRecord, topologyRecording)) {
             // If the queue is on a cluster node that is down, basic.consume will fail with a 404.
             // This will close the channel and we can't afford it, so we check if the queue exists with a different channel,
             // and postpone the subscription if the queue does not exist
-            LOGGER.debug("Checking if queue {} exists before subscribing", queueName);
-            if (Utils.exists(channel.getConnection(), ch -> ch.queueDeclarePassive(queueName))) {
+            if (queueExists) {
                 LOGGER.debug("Queue {} does exist, subscribing", queueName);
                 channel.basicConsume(queueName, autoAck, consumerTag, false, false, this.consumerArguments, q);
             } else {
-                LOGGER.debug("Queue {} does not exist, it is likely unavailable, scheduling subscription.", queueName);
+                LOGGER.debug("Queue {} does not exist, it is likely unavailable, trying to re-create it though, "
+                    + "and scheduling subscription.", queueName);
+                topologyRecording.recoverQueueAndBindings(channel.getConnection(), queueRecord);
                 Duration schedulingPeriod = Duration.ofSeconds(5);
                 int maxRetry = (int) (Duration.ofMinutes(10).getSeconds() / schedulingPeriod.getSeconds());
                 AtomicInteger retryCount = new AtomicInteger(0);
@@ -419,7 +441,15 @@ public class Consumer extends AgentBase implements Runnable {
                 );
             }
         } else {
-            channel.basicConsume(queueName, autoAck, consumerTag, false, false, this.consumerArguments, q);
+            if (!queueExists) {
+                // the queue seems to have been deleted, re-creating it with its bindings
+                LOGGER.debug(
+                    "Queue {} does not exist, trying to re-create it before re-subscribing",
+                    queueName);
+                topologyRecording.recoverQueueAndBindings(channel.getConnection(), queueRecord);
+            }
+            channel.basicConsume(queueRecord == null ? queueName : queueRecord.name(), autoAck,
+                consumerTag, false, false, this.consumerArguments, q);
         }
     }
 
@@ -498,20 +528,13 @@ public class Consumer extends AgentBase implements Runnable {
 
     private static class ConsumerState implements AgentState {
 
-        private final float rateLimit;
         private volatile long  lastStatsTime;
         private volatile long lastActivityTimestamp = -1;
         private final AtomicInteger msgCount = new AtomicInteger(0);
         private final TimestampProvider timestampProvider;
 
-        protected ConsumerState(float rateLimit,
-            TimestampProvider timestampProvider) {
-            this.rateLimit = rateLimit;
+        protected ConsumerState(TimestampProvider timestampProvider) {
             this.timestampProvider = timestampProvider;
-        }
-
-        public float getRateLimit() {
-            return rateLimit;
         }
 
         public long getLastStatsTime() {

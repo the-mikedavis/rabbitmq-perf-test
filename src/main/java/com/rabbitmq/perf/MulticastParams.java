@@ -124,11 +124,15 @@ public class MulticastParams {
     private Map<String, Object> consumerArguments = null;
 
     private EXIT_WHEN exitWhen = EXIT_WHEN.NEVER;
+    private Duration consumerStartDelay = Duration.ofSeconds(-1);
+    private Map<String, Number> exposedMetrics = Collections.emptyMap();
 
     // for random JSON body generation
     private AtomicReference<MessageBodySource> messageBodySourceReference = new AtomicReference<>();
 
     private boolean cluster = false;
+
+    private StartListener startListener;
 
     public void setExchangeType(String exchangeType) {
         this.exchangeType = exchangeType;
@@ -300,6 +304,10 @@ public class MulticastParams {
         this.cluster = cluster;
     }
 
+    void setConsumerStartDelay(Duration csd) {
+        this.consumerStartDelay = csd;
+    }
+
     public int getConsumerCount() {
         return consumerCount;
     }
@@ -393,6 +401,10 @@ public class MulticastParams {
         return timeLimit;
     }
 
+    public float getConsumerRateLimit() {
+        return consumerRateLimit;
+    }
+
     public int getProducerMsgCount() {
         return producerMsgCount;
     }
@@ -441,6 +453,10 @@ public class MulticastParams {
         return exitWhen;
     }
 
+    public Duration getConsumerStartDelay() {
+        return consumerStartDelay;
+    }
+
     public void setPolling(boolean polling) {
         this.polling = polling;
     }
@@ -475,6 +491,10 @@ public class MulticastParams {
 
     public void setQueuesInSequence(boolean queuesInSequence) {
         this.queuesInSequence = queuesInSequence;
+    }
+
+    public void setStartListener(StartListener startListener) {
+        this.startListener = startListener;
     }
 
     public Producer createProducer(Connection connection, Stats stats, MulticastSet.CompletionHandler completionHandler,
@@ -515,6 +535,7 @@ public class MulticastParams {
             .setRandomStartDelayInSeconds(this.producerRandomStartDelayInSeconds)
             .setRecoveryProcess(recoveryProcess)
             .setRateIndicator(rateIndicator)
+            .setStartListener(this.startListener)
         );
         channel.addReturnListener(producer);
         channel.addConfirmListener(producer);
@@ -568,6 +589,7 @@ public class MulticastParams {
                 .setConsumerArguments(this.consumerArguments)
                 .setExitWhen(this.exitWhen)
                 .setTopologyRecoveryScheduledExecutorService(topologyRecordingScheduledExecutorService)
+                .setStartListener(this.startListener)
         );
         this.topologyHandler.next();
         return consumer;

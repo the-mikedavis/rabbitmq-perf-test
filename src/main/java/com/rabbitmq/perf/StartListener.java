@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2022 VMware, Inc. or its affiliates.  All rights reserved.
+// Copyright (c) 2022 VMware, Inc. or its affiliates.  All rights reserved.
 //
 // This software, the RabbitMQ Java client library, is triple-licensed under the
 // Mozilla Public License 2.0 ("MPL"), the GNU General Public License version 2
@@ -15,20 +15,15 @@
 
 package com.rabbitmq.perf;
 
-import io.micrometer.core.instrument.composite.CompositeMeterRegistry;
-import java.time.Duration;
+@FunctionalInterface
+interface StartListener {
 
-/**
- *
- */
-public class NoOpStats extends Stats {
+  StartListener NO_OP = (id, type) -> { };
 
-    public NoOpStats() {
-        super(Duration.ofMillis(1000), false, new CompositeMeterRegistry(), "");
-    }
+  void started(int id, Type type);
 
-    @Override
-    protected void report(long now) {
+  enum Type {
+    PRODUCER, CONSUMER
+  }
 
-    }
 }

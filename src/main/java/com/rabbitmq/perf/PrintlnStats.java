@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2020 VMware, Inc. or its affiliates.  All rights reserved.
+// Copyright (c) 2018-2022 VMware, Inc. or its affiliates.  All rights reserved.
 //
 // This software, the RabbitMQ Java client library, is triple-licensed under the
 // Mozilla Public License 2.0 ("MPL"), the GNU General Public License version 2
@@ -20,6 +20,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 
 import java.io.PrintStream;
 import java.io.PrintWriter;
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static java.lang.String.format;
@@ -28,6 +29,7 @@ import static java.lang.String.format;
  * Class to output stats on the console and in a CSV file.
  */
 class PrintlnStats extends Stats {
+    private static final String LATENCY_HEADER = "min/median/75th/95th/99th";
     public static final String MESSAGE_RATE_LABEL = "msg/s";
     private final boolean sendStatsEnabled;
     private final boolean recvStatsEnabled;
@@ -43,7 +45,7 @@ class PrintlnStats extends Stats {
 
     private final AtomicBoolean printFinalOnGoingOrDone = new AtomicBoolean(false);
 
-    public PrintlnStats(String testID, long interval,
+    public PrintlnStats(String testID, Duration interval,
                         boolean sendStatsEnabled, boolean recvStatsEnabled,
                         boolean returnStatsEnabled, boolean confirmStatsEnabled,
                         boolean legacyMetrics, boolean useMillis,
@@ -54,7 +56,7 @@ class PrintlnStats extends Stats {
                 csvOut, registry, metricsPrefix, System.out);
     }
 
-    public PrintlnStats(String testID, long interval,
+    public PrintlnStats(String testID, Duration interval,
                         boolean sendStatsEnabled, boolean recvStatsEnabled,
                         boolean returnStatsEnabled, boolean confirmStatsEnabled,
                         boolean legacyMetrics, boolean useMillis,
@@ -97,8 +99,8 @@ class PrintlnStats extends Stats {
         }
     }
 
-    private static double rate(long count, long elapsed) {
-        return 1000.0 * count / elapsed;
+    private static double rate(long count, long elapsedInMs) {
+        return MS_TO_SECOND * count / elapsedInMs;
     }
 
     @Override
@@ -117,28 +119,30 @@ class PrintlnStats extends Stats {
         double rateNacked = 0.0;
         double rateConsumed = 0.0;
 
+        long elapsedTime = Duration.ofNanos(elapsedInterval.get()).toMillis();
+
         if (sendStatsEnabled) {
-            ratePublished = rate(sendCountInterval, elapsedInterval);
+            ratePublished = rate(sendCountInterval.get(), elapsedTime);
             published(ratePublished);
         }
         if (sendStatsEnabled && returnStatsEnabled) {
-            rateReturned = rate(returnCountInterval, elapsedInterval);
+            rateReturned = rate(returnCountInterval.get(), elapsedTime);
             returned(rateReturned);
         }
         if (sendStatsEnabled && confirmStatsEnabled) {
-            rateConfirmed = rate(confirmCountInterval, elapsedInterval);
+            rateConfirmed = rate(confirmCountInterval.get(), elapsedTime);
             confirmed(rateConfirmed);
         }
         if (sendStatsEnabled && confirmStatsEnabled) {
-            rateNacked = rate(nackCountInterval, elapsedInterval);
+            rateNacked = rate(nackCountInterval.get(), elapsedTime);
             nacked(rateNacked);
         }
         if (recvStatsEnabled) {
-            rateConsumed = rate(recvCountInterval, elapsedInterval);
+            rateConsumed = rate(recvCountInterval.get(), elapsedTime);
             received(rateConsumed);
         }
 
-        output += "time: " + format("%.3f", (now - startTime) / 1000.0) + "s";
+        output += "time: " + format("%.3f", (now - startTime) / NANO_TO_SECOND) + "s";
         output +=
                 getRate("sent", ratePublished, sendStatsEnabled) +
                         getRate("returned", rateReturned, sendStatsEnabled && returnStatsEnabled) +
@@ -148,33 +152,23 @@ class PrintlnStats extends Stats {
 
         long[] consumerLatencyStats = null;
         long[] confirmLatencyStats = null;
-        if (legacyMetrics && latencyCountInterval > 0) {
+        if (legacyMetrics && latencyCountInterval.get() > 0) {
             output += legacyMetrics();
         } else {
             if (shouldDisplayConsumerLatency() || shouldDisplayConfirmLatency()) {
-                output += ", min/median/75th/95th/99th ";
+                output += format(", %s ", LATENCY_HEADER);
             }
             if (shouldDisplayConsumerLatency()) {
-                output += "consumer latency: ";
                 consumerLatencyStats = getStats(latency);
-                output += consumerLatencyStats[0] + "/"
-                        + consumerLatencyStats[1] + "/"
-                        + consumerLatencyStats[2] + "/"
-                        + consumerLatencyStats[3] + "/"
-                        + consumerLatencyStats[4] + " " + units;
+                output += "consumer latency: " + formatLatency(consumerLatencyStats);
             }
             if (shouldDisplayConsumerLatency() && shouldDisplayConfirmLatency()) {
                 output += ", ";
             }
 
             if (shouldDisplayConfirmLatency()) {
-                output += "confirm latency: ";
                 confirmLatencyStats = getStats(confirmLatency);
-                output += confirmLatencyStats[0] + "/"
-                        + confirmLatencyStats[1] + "/"
-                        + confirmLatencyStats[2] + "/"
-                        + confirmLatencyStats[3] + "/"
-                        + confirmLatencyStats[4] + " " + units;
+                output += "confirm latency: " + formatLatency(confirmLatencyStats);
             }
         }
 
@@ -182,17 +176,29 @@ class PrintlnStats extends Stats {
             this.out.println(output);
         }
 
-        writeToCsvIfNecessary(now, ratePublished, rateReturned, rateConfirmed, rateNacked, rateConsumed, consumerLatencyStats, confirmLatencyStats);
+        writeToCsvIfNecessary(now, ratePublished, rateReturned, rateConfirmed, rateNacked,
+            rateConsumed, consumerLatencyStats, confirmLatencyStats);
+    }
+
+    private String latencyReport(Histogram latency) {
+        long[] stats = getStats(latency);
+        return formatLatency(stats);
+    }
+
+    private String formatLatency(long [] stats) {
+        return format("%d/%d/%d/%d/%d %s", stats[0], stats[1], stats[2], stats[3], stats[4],
+            units);
     }
 
     private String legacyMetrics() {
         return ", min/avg/max latency: " +
-                minLatency / 1000L + "/" +
-                cumulativeLatencyInterval / (1000L * latencyCountInterval) + "/" +
-                maxLatency / 1000L + " µs ";
+                minLatency.get() / 1000L + "/" +
+                cumulativeLatencyInterval.get() / (1000L * latencyCountInterval.get()) + "/" +
+                maxLatency.get() / 1000L + " µs ";
     }
 
-    private void writeToCsvIfNecessary(long now, double ratePublished, double rateReturned, double rateConfirmed, double rateNacked, double rateConsumed, long[] consumerLatencyStats, long[] confirmLatencyStats) {
+    private void writeToCsvIfNecessary(long now, double ratePublished, double rateReturned, double rateConfirmed, double rateNacked, double rateConsumed,
+                long[] consumerLatencyStats, long[] confirmLatencyStats) {
         if (this.csvOut != null && !printFinalOnGoingOrDone.get()) {
             if (consumerLatencyStats == null) {
                 consumerLatencyStats = getStats(latency);
@@ -200,7 +206,7 @@ class PrintlnStats extends Stats {
             if (confirmLatencyStats == null) {
                 confirmLatencyStats = getStats(confirmLatency);
             }
-            this.csvOut.println(testID + "," + format("%.3f", (now - startTime) / 1000.0) + "," +
+            this.csvOut.println(testID + "," + format("%.3f", (now - startTime) / NANO_TO_SECOND) + "," +
                     rate(ratePublished, sendStatsEnabled) + "," +
                     rate(rateReturned, sendStatsEnabled && returnStatsEnabled) + "," +
                     rate(rateConfirmed, sendStatsEnabled && confirmStatsEnabled) + "," +
@@ -261,17 +267,30 @@ class PrintlnStats extends Stats {
 
     public void printFinal() {
         if (printFinalOnGoingOrDone.compareAndSet(false, true)) {
-            long now = System.currentTimeMillis();
-
-            System.out.println("id: " + testID + ", sending rate avg: " +
-                    formatRate(sendCountTotal * 1000.0 / (now - startTime)) +
+            long now = System.nanoTime();
+            long st = this.startTimeForGlobals.get();
+            long elapsed = Duration.ofNanos(now - st).toMillis();
+            String lineSeparator = System.getProperty("line.separator");
+            StringBuilder summary = new StringBuilder("id: " + testID + ", sending rate avg: " +
+                    formatRate(sendCountTotal.get() * MS_TO_SECOND / elapsed) +
                     " " + MESSAGE_RATE_LABEL);
+            summary.append(lineSeparator);
 
-            long elapsed = now - startTime;
             if (elapsed > 0) {
-                System.out.println("id: " + testID + ", receiving rate avg: " +
-                        formatRate(recvCountTotal * 1000.0 / elapsed) +
-                        " " + MESSAGE_RATE_LABEL);
+                summary.append("id: " + testID + ", receiving rate avg: " +
+                        formatRate(recvCountTotal.get() * MS_TO_SECOND / elapsed) +
+                        " " + MESSAGE_RATE_LABEL).append(lineSeparator);
+                if (shouldDisplayConsumerLatency()) {
+                    summary.append(format("id: %s, consumer latency %s %s",
+                        testID, LATENCY_HEADER, latencyReport(this.globalLatency.get())
+                    )).append(lineSeparator);
+                }
+                if (shouldDisplayConfirmLatency()) {
+                    summary.append(format("id: %s, confirm latency %s %s",
+                        testID, LATENCY_HEADER, latencyReport(this.globalConfirmLatency.get())
+                    )).append(lineSeparator);
+                }
+                System.out.print(summary);
             }
         }
     }

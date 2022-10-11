@@ -17,6 +17,7 @@ package com.rabbitmq.perf;
 
 import com.rabbitmq.client.ShutdownSignalException;
 import com.rabbitmq.client.impl.recovery.AutorecoveringConnection;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,7 +31,18 @@ public abstract class AgentBase {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(AgentBase.class);
 
+    private static final AtomicInteger AGENT_ID_SEQUENCE = new AtomicInteger(0);
+
     private volatile TopologyRecording topologyRecording;
+
+    private final int agentId;
+
+    final StartListener startListener;
+
+    protected AgentBase(StartListener startListener) {
+        this.startListener = startListener == null ? StartListener.NO_OP : startListener;
+        this.agentId = AGENT_ID_SEQUENCE.getAndIncrement();
+    }
 
     public void setTopologyRecording(TopologyRecording topologyRecording) {
         this.topologyRecording = topologyRecording;
@@ -38,25 +50,6 @@ public abstract class AgentBase {
 
     protected TopologyRecording topologyRecording() {
         return this.topologyRecording;
-    }
-
-    protected void delay(long now, AgentState state) {
-        long elapsed = now - state.getLastStatsTime();
-        //example: rateLimit is 5000 msg/s,
-        //10 ms have elapsed, we have published 200 messages
-        //the 200 msgs we have actually published should have taken us
-        //200 * 1000 / 5000 = 40 ms. So we pause for 40ms - 10ms
-        float rateLimit = state.getRateLimit();
-        long pause = (long) (rateLimit <= 0.0f ?
-            0.0f : (state.getMsgCount() * 1000.0 / rateLimit - elapsed));
-        if (pause > 0) {
-            try {
-                Thread.sleep(pause);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new RuntimeException(e);
-            }
-        }
     }
 
     protected boolean isConnectionRecoveryTriggered(ShutdownSignalException e) {
@@ -102,11 +95,15 @@ public abstract class AgentBase {
         }
     }
 
+    protected void started() {
+        this.startListener.started(this.agentId, type());
+    }
+
+    protected abstract StartListener.Type type();
+
     public abstract void recover(TopologyRecording topologyRecording);
 
     protected interface AgentState {
-
-        float getRateLimit();
 
         long getLastStatsTime();
 
