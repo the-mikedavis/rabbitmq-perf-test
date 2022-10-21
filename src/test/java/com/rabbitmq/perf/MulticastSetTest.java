@@ -18,6 +18,7 @@ package com.rabbitmq.perf;
 import com.rabbitmq.client.Address;
 import com.rabbitmq.client.Connection;
 import com.rabbitmq.client.ConnectionFactory;
+import com.rabbitmq.perf.metrics.PerformanceMetrics;
 import java.time.Duration;
 import org.apache.commons.lang3.time.StopWatch;
 import org.junit.jupiter.api.AfterEach;
@@ -25,7 +26,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
-import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mock;
@@ -59,8 +59,6 @@ public class MulticastSetTest {
     ConnectionFactory factory;
     @Mock
     Connection connection;
-    @Mock
-    Stats stats;
 
     AutoCloseable mocks;
 
@@ -342,7 +340,7 @@ public class MulticastSetTest {
 
     private MulticastSet getMulticastSet(List<String> uris) {
         MulticastSet set = new MulticastSet(
-                stats, factory, params, uris, new MulticastSet.CompletionHandler() {
+                PerformanceMetrics.NO_OP, factory, params, uris, new MulticastSet.CompletionHandler() {
 
             @Override
             public void waitForCompletion() {

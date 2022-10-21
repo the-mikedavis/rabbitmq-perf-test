@@ -20,6 +20,7 @@ import com.rabbitmq.client.Channel;
 import com.rabbitmq.client.Connection;
 
 import com.rabbitmq.perf.PerfTest.EXIT_WHEN;
+import com.rabbitmq.perf.metrics.PerformanceMetrics;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -497,7 +498,7 @@ public class MulticastParams {
         this.startListener = startListener;
     }
 
-    public Producer createProducer(Connection connection, Stats stats, MulticastSet.CompletionHandler completionHandler,
+    public Producer createProducer(Connection connection, PerformanceMetrics performanceMetrics, MulticastSet.CompletionHandler completionHandler,
                                    ValueIndicator<Float> rateIndicator, ValueIndicator<Integer> messageSizeIndicator) throws IOException {
         Channel channel = connection.createChannel(); //NOSONAR
         if (producerTxSize > 0) channel.txSelect();
@@ -530,7 +531,7 @@ public class MulticastParams {
             .setRandomRoutingKey(randomRoutingKey).setFlags(flags).setTxSize(producerTxSize)
             .setMsgLimit(producerMsgCount).setConfirm(confirm)
             .setConfirmTimeout(confirmTimeout).setMessageBodySource(messageBodySource).setTsp(tsp)
-            .setStats(stats).setMessageProperties(messageProperties).setCompletionHandler(completionHandler)
+            .setPerformanceMetrics(performanceMetrics).setMessageProperties(messageProperties).setCompletionHandler(completionHandler)
             .setRoutingKeyCacheSize(this.routingKeyCacheSize)
             .setRandomStartDelayInSeconds(this.producerRandomStartDelayInSeconds)
             .setRecoveryProcess(recoveryProcess)
@@ -544,7 +545,7 @@ public class MulticastParams {
     }
 
     public Consumer createConsumer(Connection connection,
-                                   Stats stats,
+                                   PerformanceMetrics performanceMetrics,
                                    ValueIndicator<Long> consumerLatenciesIndicator,
                                    MulticastSet.CompletionHandler completionHandler,
                                    ExecutorService executorService,
@@ -574,7 +575,7 @@ public class MulticastParams {
                 .setTxSize(consumerTxSize)
                 .setAutoAck(autoAck)
                 .setMultiAckEvery(multiAckEvery)
-                .setStats(stats)
+                .setPerformanceMetrics(performanceMetrics)
                 .setRateLimit(consumerRateLimit)
                 .setMsgLimit(consumerMsgCount)
                 .setConsumerLatencyIndicator(consumerLatenciesIndicator)

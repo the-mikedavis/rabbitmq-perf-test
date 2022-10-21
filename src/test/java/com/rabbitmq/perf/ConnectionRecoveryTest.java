@@ -44,6 +44,7 @@ import com.rabbitmq.client.ShutdownSignalException;
 import com.rabbitmq.client.impl.AMQImpl;
 import com.rabbitmq.client.impl.AMQImpl.Channel.Close;
 import com.rabbitmq.client.impl.recovery.AutorecoveringConnection;
+import com.rabbitmq.perf.metrics.PerformanceMetrics;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -68,7 +69,8 @@ public class ConnectionRecoveryTest {
   @Mock ConnectionFactory cf;
   @Mock AutorecoveringConnection c;
   @Mock Channel ch;
-  @Mock Stats stats;
+  @Mock
+  PerformanceMetrics performanceMetrics;
   @Mock MulticastSet.ThreadingHandler threadingHandler;
   @Mock ExecutorService executorService;
   @Mock ScheduledExecutorService scheduledExecutorService;
@@ -208,7 +210,7 @@ public class ConnectionRecoveryTest {
       CountDownLatch runStartedLatch, CountDownLatch completionLatch) {
     MulticastSet set =
         new MulticastSet(
-            stats,
+            performanceMetrics,
             cf,
             params,
             Arrays.asList("amqp://localhost", "amqp://localhost", "amqp://localhost"),

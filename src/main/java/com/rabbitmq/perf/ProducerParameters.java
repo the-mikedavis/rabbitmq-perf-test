@@ -17,6 +17,7 @@ package com.rabbitmq.perf;
 
 import com.rabbitmq.client.Channel;
 
+import com.rabbitmq.perf.metrics.PerformanceMetrics;
 import java.util.List;
 import java.util.Map;
 
@@ -36,7 +37,7 @@ public class ProducerParameters {
     private int confirmTimeout;
     private MessageBodySource messageBodySource;
     private TimestampProvider tsp;
-    private Stats stats;
+    private PerformanceMetrics performanceMetrics;
     private Map<String, Object> messageProperties;
     private MulticastSet.CompletionHandler completionHandler;
     private int routingKeyCacheSize;
@@ -144,12 +145,12 @@ public class ProducerParameters {
         return this;
     }
 
-    public Stats getStats() {
-        return stats;
+    public PerformanceMetrics getPerformanceMetrics() {
+        return performanceMetrics;
     }
 
-    public ProducerParameters setStats(Stats stats) {
-        this.stats = stats;
+    public ProducerParameters setPerformanceMetrics(PerformanceMetrics performanceMetrics) {
+        this.performanceMetrics = performanceMetrics;
         return this;
     }
 

@@ -19,6 +19,7 @@ import com.rabbitmq.client.AMQP.Queue.DeclareOk;
 import com.rabbitmq.client.Consumer;
 import com.rabbitmq.client.*;
 import com.rabbitmq.perf.PerfTest.EXIT_WHEN;
+import com.rabbitmq.perf.metrics.PerformanceMetrics;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
@@ -65,7 +66,7 @@ public class MessageCountTimeLimitAndPublishingIntervalRateTest {
     private static final Duration SECONDS_5 = Duration.ofSeconds(5);
     static Set<String> THREADS = new LinkedHashSet<>();
     MulticastSet.CompletionHandler completionHandler;
-    Stats stats = new NoOpStats();
+    PerformanceMetrics performanceMetrics = PerformanceMetrics.NO_OP;
     MulticastParams params;
     AtomicInteger agentStartedCount = new AtomicInteger(0);
     ExecutorService executorService;
@@ -1067,7 +1068,7 @@ public class MessageCountTimeLimitAndPublishingIntervalRateTest {
             }
         };
         MulticastSet set = new MulticastSet(
-                stats, connectionFactory, params, singletonList("amqp://localhost"),
+                performanceMetrics, connectionFactory, params, singletonList("amqp://localhost"),
                 completionHandlerWrapper
         );
         set.setThreadingHandler(th);

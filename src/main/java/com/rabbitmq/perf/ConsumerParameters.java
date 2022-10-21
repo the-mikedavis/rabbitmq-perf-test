@@ -18,6 +18,7 @@ package com.rabbitmq.perf;
 import com.rabbitmq.client.Channel;
 
 import com.rabbitmq.perf.PerfTest.EXIT_WHEN;
+import com.rabbitmq.perf.metrics.PerformanceMetrics;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -35,7 +36,7 @@ public class ConsumerParameters {
     private int txSize;
     private boolean autoAck;
     private int multiAckEvery;
-    private Stats stats;
+    private PerformanceMetrics performanceMetrics;
     private float rateLimit;
     private int msgLimit;
     private ValueIndicator<Long> consumerLatenciesIndicator;
@@ -111,12 +112,12 @@ public class ConsumerParameters {
         return this;
     }
 
-    public Stats getStats() {
-        return stats;
+    public PerformanceMetrics getPerformanceMetrics() {
+        return performanceMetrics;
     }
 
-    public ConsumerParameters setStats(Stats stats) {
-        this.stats = stats;
+    public ConsumerParameters setPerformanceMetrics(PerformanceMetrics performanceMetrics) {
+        this.performanceMetrics = performanceMetrics;
         return this;
     }
 

@@ -23,6 +23,12 @@ import com.rabbitmq.client.impl.ClientVersion;
 import com.rabbitmq.client.impl.DefaultExceptionHandler;
 import com.rabbitmq.client.impl.nio.NioParams;
 import com.rabbitmq.perf.Metrics.ConfigurationContext;
+import com.rabbitmq.perf.metrics.CompositeMetricsFormatter;
+import com.rabbitmq.perf.metrics.CsvMetricsFormatter;
+import com.rabbitmq.perf.metrics.DefaultPerformanceMetrics;
+import com.rabbitmq.perf.metrics.MetricsFormatter;
+import com.rabbitmq.perf.metrics.MetricsFormatterFactory;
+import com.rabbitmq.perf.metrics.MetricsFormatterFactory.Context;
 import io.micrometer.core.instrument.composite.CompositeMeterRegistry;
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -124,7 +130,6 @@ public class PerfTest {
             String bodyFiles         = strArg(cmd, 'B', null);
             String bodyContentType   = strArg(cmd, 'T', null);
             boolean predeclared      = hasOption(cmd, "p");
-            boolean legacyMetrics    = hasOption(cmd, "l");
             boolean autoDelete       = boolArg(cmd, "ad", true);
             boolean useMillis        = hasOption(cmd,"ms");
             boolean saslExternal     = hasOption(cmd, "se");
@@ -154,6 +159,7 @@ public class PerfTest {
             int serversStartUpTimeout = intArg(cmd, "sst", -1);
             int serversUpLimit = intArg(cmd, "sul", -1);
             String consumerArgs = strArg(cmd, "ca", null);
+            String metricsFormat = strArg(cmd, "mf", "default");
 
             List<String> variableRates = lstArg(cmd, "vr");
             if (variableRates != null && !variableRates.isEmpty()) {
@@ -282,14 +288,6 @@ public class PerfTest {
             } else {
                 uris = singletonList(uri);
             }
-
-            //setup
-            PrintlnStats stats = new PrintlnStats(testID,
-                Duration.ofSeconds(samplingInterval),
-                producerCount > 0,
-                consumerCount > 0,
-                (flags.contains("mandatory") || flags.contains("immediate")),
-                confirm != -1, legacyMetrics, useMillis, output, registry, metricsPrefix);
 
             SSLContext sslContext = perfTestOptions.skipSslContextConfiguration ? null :
                 getSslContextIfNecessary(cmd, System.getProperties());
@@ -423,11 +421,45 @@ public class PerfTest {
 
             factory.setExceptionHandler(perfTestOptions.exceptionHandler);
 
+            TimeUnit latencyCollectionTimeUnit = useMillis ? TimeUnit.MILLISECONDS : TimeUnit.NANOSECONDS;
+
+            MetricsFormatter metricsFormatter = null;
+            try {
+                metricsFormatter = MetricsFormatterFactory.create(metricsFormat,
+                    new Context(System.out,
+                        testID,
+                        producerCount > 0,
+                        consumerCount > 0,
+                        (flags.contains("mandatory") || flags.contains("immediate")),
+                        confirm != -1,
+                        latencyCollectionTimeUnit)
+                );
+            } catch (IllegalArgumentException e) {
+                System.err.println(e.getMessage());
+                systemExiter.exit(1);
+            }
+
+            if (output != null) {
+                metricsFormatter = new CompositeMetricsFormatter(
+                    metricsFormatter,
+                    new CsvMetricsFormatter(output, testID, producerCount > 0,
+                        consumerCount > 0,
+                        (flags.contains("mandatory") || flags.contains("immediate")),
+                        confirm != -1,
+                        latencyCollectionTimeUnit)
+                );
+            }
+            DefaultPerformanceMetrics performanceMetrics = new DefaultPerformanceMetrics(
+                Duration.ofSeconds(samplingInterval),
+                latencyCollectionTimeUnit,
+                registry, metricsPrefix, metricsFormatter);
+            shutdownService.wrap(() -> performanceMetrics.close());
+
             AtomicBoolean statsSummaryDone = new AtomicBoolean(false);
             Runnable statsSummary = () -> {
                 if (statsSummaryDone.compareAndSet(false, true)) {
                     System.out.println(stopLine(completionReasons));
-                    stats.printFinal();
+                    performanceMetrics.close();
                 }
             };
             shutdownService.wrap(() -> statsSummary.run());
@@ -438,12 +470,12 @@ public class PerfTest {
             Set<Integer> starts = ConcurrentHashMap.newKeySet(agentCount);
             p.setStartListener((id, type) -> {
                 if (starts.add(id) && starts.size() == agentCount) {
-                    stats.resetGlobals();
+                    performanceMetrics.resetGlobals();
                 }
                 expectedMetrics.agentStarted(type);
             });
 
-            MulticastSet set = new MulticastSet(stats, factory, p, testID, uris, completionHandler,
+            MulticastSet set = new MulticastSet(performanceMetrics, factory, p, testID, uris, completionHandler,
                 shutdownService, expectedMetrics);
             set.run(true);
 
@@ -669,7 +701,6 @@ public class PerfTest {
         options.addOption(new Option("p", "predeclared",            false,"allow use of predeclared objects"));
         options.addOption(new Option("B", "body",                   true, "comma-separated list of files to use in message bodies"));
         options.addOption(new Option("T", "body-content-type",      true, "body content-type"));
-        options.addOption(new Option("l", "legacy-metrics",         false,"display legacy metrics (min/avg/max latency)"));
         options.addOption(new Option("o", "output-file",            true, "output file for timing results"));
         options.addOption(new Option("ad", "auto-delete",           true, "should the queue be auto-deleted, default is true"));
         options.addOption(new Option("ms", "use-millis",            false,"should latency be collected in milliseconds, default is false. "
@@ -767,6 +798,8 @@ public class PerfTest {
         options.addOption(new Option("csd", "consumer-start-delay", true, "fixed delay before starting consumers in seconds"));
         options.addOption(new Option("em", "exposed-metrics", true, "metrics to be exposed as key/value pairs, separated by commas, "
             + "e.g. expected_published=50000"));
+        options.addOption(new Option("mf", "metrics-format", true, "metrics format to use on the console, possible values are "
+            + MetricsFormatterFactory.types().stream().collect(Collectors.joining(", "))));
         return options;
     }
 
@@ -804,9 +837,9 @@ public class PerfTest {
 
     static Map<String, Object> convertKeyValuePairs(List<String> args) {
         if (args == null || args.isEmpty()) {
-            return Collections.emptyMap();
+            return new LinkedHashMap<>();
         } else {
-            LinkedHashMap result = new LinkedHashMap();
+            LinkedHashMap<String, Object> result = new LinkedHashMap<>();
             for (String arg : args) {
                 Map<String, Object> intermediaryArgs = convertKeyValuePairs(arg);
                 if (intermediaryArgs != null) {

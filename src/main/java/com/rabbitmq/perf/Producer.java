@@ -20,6 +20,7 @@ import com.rabbitmq.client.Channel;
 import com.rabbitmq.client.ConfirmListener;
 import com.rabbitmq.client.ReturnListener;
 import com.rabbitmq.perf.StartListener.Type;
+import com.rabbitmq.perf.metrics.PerformanceMetrics;
 import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -77,7 +78,7 @@ public class Producer extends AgentBase implements Runnable, ReturnListener,
     private final int     txSize;
     private final int     msgLimit;
 
-    private final Stats   stats;
+    private final PerformanceMetrics performanceMetrics;
 
     private final MessageBodySource messageBodySource;
 
@@ -136,7 +137,7 @@ public class Producer extends AgentBase implements Runnable, ReturnListener,
             this.confirmTimeout = -1;
             this.maxOutstandingConfirms = -1;
         }
-        this.stats = parameters.getStats();
+        this.performanceMetrics = parameters.getPerformanceMetrics();
         this.completionHandler = parameters.getCompletionHandler();
         this.propertiesBuilderProcessor = builderProcessor;
         if (parameters.isRandomRoutingKey() || parameters.getRoutingKeyCacheSize() > 0) {
@@ -293,7 +294,7 @@ public class Producer extends AgentBase implements Runnable, ReturnListener,
                              String routingKey,
                              AMQP.BasicProperties properties,
                              byte[] body) {
-        stats.handleReturn();
+        this.performanceMetrics.returned();
     }
 
     public void handleAck(long seqNo, boolean multiple) {
@@ -342,7 +343,7 @@ public class Producer extends AgentBase implements Runnable, ReturnListener,
             }
             numConfirms = 1;
         }
-        stats.handleConfirm(numConfirms, latencies);
+        this.performanceMetrics.confirmed(numConfirms, latencies);
         return numConfirms;
     }
 
@@ -356,7 +357,7 @@ public class Producer extends AgentBase implements Runnable, ReturnListener,
             unconfirmed.remove(seqNo);
             numConfirms = 1;
         }
-        stats.handleNack(numConfirms);
+        this.performanceMetrics.nacked(numConfirms);
         return numConfirms;
     }
 
@@ -538,7 +539,7 @@ public class Producer extends AgentBase implements Runnable, ReturnListener,
                 int messageCount = currentState.incrementMessageCount();
 
                 commitTransactionIfNecessary(messageCount);
-                stats.handleSend();
+                this.performanceMetrics.published();
             } catch (IOException e) {
                 throw new RuntimeException(e);
             } catch (InterruptedException e) {
